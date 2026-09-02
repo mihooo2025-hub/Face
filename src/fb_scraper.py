@@ -81,13 +81,6 @@ def fetch_recent_posts():
     return results
 
 
-def _extract_page_identifier(url):
-    """يستخرج اسم/معرّف الصفحة من رابط فيسبوك (يدعم روابط share وروابط profile.php)."""
-    if "profile.php" in url:
-        import urllib.parse as up
-        query = up.urlparse(url).query
-        params = up.parse_qs(query)
-        return params.get("id", [url])[0]
-    # روابط share تُحل تلقائيًا من قبل المكتبة عند تمرير الرابط كاملاً غالبًا،
-    # كحل بديل نمرر الرابط نفسه.
-    return url
+def _extract_page_identifier(page):
+    """الإعدادات الآن تحتوي أسماء/أرقام صفحات جاهزة مباشرة، فقط نعيدها كما هي."""
+    return page
