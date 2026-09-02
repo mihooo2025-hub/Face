@@ -7,13 +7,20 @@ import os
 
 # ---------- صفحات فيسبوك المراد جلب المنشورات منها ----------
 FACEBOOK_PAGES = [
-    "https://www.facebook.com/share/19bWM9MVtB/",
-    "https://www.facebook.com/share/1BwKHuaH1G/",
-    "https://www.facebook.com/share/19VWNrb3yk/",
-    "https://www.facebook.com/profile.php?id=100063679327981",
-    "https://www.facebook.com/share/19rHPXZGg3/",
-    "https://www.facebook.com/share/1E2QwrdurV/",
-    "https://www.facebook.com/profile.php?id=61587497035915",
+    "sada.altactic.2025",
+    "mahmoodradwn",
+    "100086387929146",
+    "61587497035915",
+    "61559947244572",
+    "kareem.tito.967",
+    "Awaadarticles",
+    "iraqnonoiraq",
+    "makalat.korawiya",
+    "61556350090847",
+    "61556189961371",
+    "Mostafa.Khaled.65",
+    "100053987663773",
+    "61572912454581",
 ]
 
 # ---------- نافذة الجلب ----------
