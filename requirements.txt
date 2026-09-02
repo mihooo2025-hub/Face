@@ -1,2 +1,4 @@
 requests>=2.31
 facebook-scraper>=0.2.59
+lxml[html_clean]
+lxml_html_clean
