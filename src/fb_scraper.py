@@ -47,15 +47,19 @@ def fetch_recent_posts():
 
     for page in config.FACEBOOK_PAGES:
         page_name = _extract_page_identifier(page)
+        raw_count = 0
+        kept_count = 0
         try:
             for post in get_posts(
                 page_name,
                 pages=3,
                 cookies=cookies,
-                options={"posts_per_page": 20, "allow_extra_requests": False},
+                options={"posts_per_page": 20, "allow_extra_requests": True},
             ):
+                raw_count += 1
                 post_time = post.get("time")
                 if post_time is None:
+                    print(f"[fb_scraper] {page}: منشور بلا حقل وقت، تم تجاهله")
                     continue
                 if post_time.tzinfo is None:
                     post_time = post_time.replace(tzinfo=timezone.utc)
@@ -74,9 +78,15 @@ def fetch_recent_posts():
                     "text": (post.get("text") or "").strip(),
                     "image_url": image_url,
                 })
+                kept_count += 1
         except Exception as exc:  # noqa: BLE001
             print(f"[fb_scraper] تعذر جلب صفحة {page}: {exc}")
             continue
+
+        print(f"[fb_scraper] {page}: تم استلام {raw_count} منشور خام، تم قبول {kept_count} منها")
+        if raw_count == 0:
+            print(f"[fb_scraper] {page}: صفر منشورات خام — الصفحة على الأرجح تطلب تسجيل دخول، "
+                  "جرّب إضافة FACEBOOK_COOKIES")
 
     return results
 
