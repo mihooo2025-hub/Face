@@ -1,0 +1,2 @@
+requests>=2.31
+facebook-scraper>=0.2.59
