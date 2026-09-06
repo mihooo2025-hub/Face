@@ -1,457 +1,384 @@
 """
-جلب المنشورات العامة من فيسبوك باستخدام متصفح Chromium عبر Playwright.
+جلب المنشورات العامة من صفحات فيسبوك باستخدام Apify.
 
-هذا الجالب لا يستخدم تسجيل الدخول أو FACEBOOK_COOKIES.
-يقرأ فقط المحتوى الذي يعرضه فيسبوك للزائر العادي.
+يعتمد هذا الملف على Apify Facebook Page Posts Scraper بدلًا من
+facebook-scraper أو Playwright.
 
-ملاحظة:
-- فيسبوك قد يعرض تسجيل دخول أو تحققًا لبعض الصفحات.
-- بنية فيسبوك تتغير باستمرار، لذلك يحتوي الكود على عدة طرق لاستخراج
-  النص والرابط والصورة ووقت المنشور.
-- لا يتم اعتبار المنشور صالحًا إذا تعذر معرفة وقت نشره، لأن المشروع
-  يعتمد على نافذة آخر 6 ساعات.
+المشروع يطلب أحدث المنشورات ثم يقوم محليًا بتصفية المنشورات
+بحسب نافذة FETCH_WINDOW_HOURS.
+
+المخرجات تبقى بنفس الشكل الذي يتوقعه main.py:
+{
+    "id": "...",
+    "source_url": "...",
+    "text": "...",
+    "image_url": "..."
+}
 """
 
+import os
 from datetime import datetime, timedelta, timezone
-from urllib.parse import urljoin
 
-from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
+import requests
 
 from . import config
 
 
-BASE_URL = "https://www.facebook.com/"
+APIFY_API_TOKEN = os.environ.get("APIFY_API_TOKEN", "").strip()
+
+APIFY_ENDPOINT = (
+    "https://api.apify.com/v2/acts/"
+    "simpleapi~facebook-page-posts-scraper/"
+    "run-sync-get-dataset-items"
+)
+
+APIFY_TIMEOUT_SECONDS = 600
+
+MAX_POSTS_PER_PAGE = 30
 
 
-def _normalize_url(page):
-    page = str(page).strip()
+def _normalize_page_url(source):
+    """
+    يحول اسم الصفحة أو المعرف الرقمي إلى رابط Facebook كامل.
+    """
 
-    if page.startswith("http://") or page.startswith("https://"):
-        return page
+    source = str(source).strip()
 
-    return urljoin(BASE_URL, page.lstrip("/"))
+    if not source:
+        return ""
+
+    if source.startswith("http://") or source.startswith("https://"):
+        return source
+
+    if source.isdigit():
+        return f"https://www.facebook.com/profile.php?id={source}"
+
+    return f"https://www.facebook.com/{source}/"
 
 
-def _parse_timestamp(value):
+def _parse_post_time(post):
+    """
+    يحاول قراءة وقت المنشور من الحقول التي يعيدها Apify.
+    """
+
+    unix_value = post.get("postCreatedAtUnix")
+
+    if unix_value is not None:
+        try:
+            return datetime.fromtimestamp(
+                int(unix_value),
+                tz=timezone.utc,
+            )
+        except (ValueError, TypeError, OverflowError):
+            pass
+
+    value = post.get("postCreatedAt")
+
     if not value:
         return None
 
     try:
-        timestamp = int(str(value).strip())
-        if timestamp > 1000000000:
-            return datetime.fromtimestamp(timestamp, tz=timezone.utc)
-    except (ValueError, TypeError, OverflowError):
-        pass
+        value = str(value).strip()
+
+        if value.endswith("Z"):
+            value = value[:-1] + "+00:00"
+
+        parsed = datetime.fromisoformat(value)
+
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+
+        return parsed.astimezone(timezone.utc)
+
+    except (ValueError, TypeError):
+        return None
+
+
+def _extract_image_url(post):
+    """
+    يحاول استخراج أفضل صورة متاحة للمنشور.
+
+    الأولوية:
+    1. صورة المنشور الأساسية.
+    2. صورة من ألبوم.
+    3. صورة الفيديو.
+    """
+
+    image = post.get("image")
+
+    if isinstance(image, dict):
+        uri = image.get("uri")
+
+        if uri:
+            return uri
+
+    if isinstance(image, str) and image.strip():
+        return image.strip()
+
+    album_preview = post.get("album_preview")
+
+    if isinstance(album_preview, dict):
+        images = album_preview.get("images")
+
+        if isinstance(images, list):
+            for item in images:
+                if isinstance(item, dict) and item.get("uri"):
+                    return item["uri"]
+
+    video_thumbnail = post.get("video_thumbnail")
+
+    if isinstance(video_thumbnail, dict):
+        uri = video_thumbnail.get("uri")
+
+        if uri:
+            return uri
+
+    if isinstance(video_thumbnail, str) and video_thumbnail.strip():
+        return video_thumbnail.strip()
 
     return None
 
 
-def _extract_post_time(article):
+def _extract_text(post):
     """
-    يحاول استخراج وقت المنشور من أكثر من موضع شائع في HTML.
-    """
-
-    # 1) data-utime
-    selectors = [
-        "[data-utime]",
-        "abbr[data-utime]",
-        "time[data-utime]",
-    ]
-
-    for selector in selectors:
-        try:
-            elements = article.locator(selector).all()
-            for element in elements:
-                value = element.get_attribute("data-utime")
-                parsed = _parse_timestamp(value)
-                if parsed:
-                    return parsed
-        except Exception:
-            pass
-
-    # 2) datetime داخل <time>
-    try:
-        elements = article.locator("time[datetime]").all()
-        for element in elements:
-            value = element.get_attribute("datetime")
-            if not value:
-                continue
-
-            try:
-                value = value.replace("Z", "+00:00")
-                parsed = datetime.fromisoformat(value)
-                if parsed.tzinfo is None:
-                    parsed = parsed.replace(tzinfo=timezone.utc)
-                return parsed.astimezone(timezone.utc)
-            except ValueError:
-                continue
-    except Exception:
-        pass
-
-    return None
-
-
-def _extract_post_url(article, page_url):
-    """
-    يحاول العثور على الرابط المباشر للمنشور.
+    يقرأ نص المنشور من message.
     """
 
-    selectors = [
-        'a[href*="/posts/"]',
-        'a[href*="/permalink/"]',
-        'a[href*="story.php"]',
-        'a[href*="permalink.php"]',
-    ]
+    text = post.get("message")
 
-    for selector in selectors:
-        try:
-            links = article.locator(selector).all()
+    if text is None:
+        text = post.get("text")
 
-            for link in links:
-                href = link.get_attribute("href")
-                if not href:
-                    continue
+    if not text:
+        return ""
 
-                href = urljoin(BASE_URL, href)
-
-                if "facebook.com" in href:
-                    return href
-        except Exception:
-            pass
-
-    # محاولة أخيرة من جميع الروابط داخل المنشور
-    try:
-        links = article.locator("a[href]").all()
-
-        for link in links:
-            href = link.get_attribute("href")
-
-            if not href:
-                continue
-
-            if any(
-                marker in href
-                for marker in (
-                    "/posts/",
-                    "/permalink/",
-                    "story.php",
-                    "permalink.php",
-                )
-            ):
-                return urljoin(BASE_URL, href)
-    except Exception:
-        pass
-
-    return page_url
+    return str(text).strip()
 
 
-def _extract_image(article):
+def _is_post_record(item):
     """
-    يستخرج أكبر صورة محتملة من المنشور.
+    Apify قد يعيد منشورات وتعليقات وملخصات صفحات.
+    نحن نريد المنشورات فقط.
     """
 
-    candidates = []
+    record_type = item.get("recordType")
 
-    try:
-        images = article.locator("img").all()
+    if record_type == "post":
+        return True
 
-        for image in images:
-            src = image.get_attribute("src")
-
-            if not src:
-                continue
-
-            width = image.get_attribute("width")
-            height = image.get_attribute("height")
-
-            try:
-                area = int(width or 0) * int(height or 0)
-            except ValueError:
-                area = 0
-
-            candidates.append((area, src))
-    except Exception:
-        return None
-
-    if not candidates:
-        return None
-
-    candidates.sort(key=lambda item: item[0], reverse=True)
-
-    return candidates[0][1]
-
-
-def _extract_text(article):
-    """
-    يستخرج النص الظاهر داخل المنشور.
-    """
-
-    selectors = [
-        '[data-ad-preview="message"]',
-        '[data-ad-comet-preview="message"]',
-    ]
-
-    for selector in selectors:
-        try:
-            element = article.locator(selector).first
-
-            if element.count():
-                text = element.inner_text(timeout=2000).strip()
-
-                if text:
-                    return text
-        except Exception:
-            pass
-
-    # طريقة احتياطية
-    try:
-        text = article.inner_text(timeout=3000).strip()
-
-        if text:
-            return text
-    except Exception:
-        pass
-
-    return ""
-
-
-def _looks_like_login_page(page):
-    try:
-        current_url = page.url.lower()
-
-        if "login" in current_url:
-            return True
-
-        body_text = page.locator("body").inner_text(timeout=3000).lower()
-
-        markers = [
-            "log in",
-            "تسجيل الدخول",
-            "create new account",
-            "إنشاء حساب جديد",
-        ]
-
-        return any(marker in body_text for marker in markers)
-
-    except Exception:
+    # حماية إضافية إذا تغير شكل النتيجة.
+    if record_type in {"comment", "page_summary"}:
         return False
 
-
-def _looks_like_challenge_page(page):
-    try:
-        current_url = page.url.lower()
-
-        markers = [
-            "checkpoint",
-            "challenge",
-            "captcha",
-            "security",
-        ]
-
-        if any(marker in current_url for marker in markers):
-            return True
-
-        html = page.content().lower()
-
-        return any(marker in html for marker in markers)
-
-    except Exception:
-        return False
+    # إذا لم يوجد recordType لكن توجد الحقول الأساسية للمنشور.
+    return bool(
+        item.get("post_id")
+        and (
+            item.get("message")
+            or item.get("text")
+        )
+        and (
+            item.get("postCreatedAt")
+            or item.get("postCreatedAtUnix")
+        )
+    )
 
 
-def _collect_page_posts(page, source, cutoff):
+def _fetch_from_apify():
     """
-    يجمع المنشورات الظاهرة حاليًا في الصفحة.
+    يشغل Apify Actor مرة واحدة لجميع الصفحات الموجودة في الإعدادات.
     """
 
-    results = []
-    seen_ids = set()
+    if not APIFY_API_TOKEN:
+        raise RuntimeError(
+            "لم يتم العثور على APIFY_API_TOKEN في متغيرات البيئة. "
+            "أضفه إلى GitHub Secrets."
+        )
+
+    page_urls = []
+
+    for source in config.FACEBOOK_PAGES:
+        url = _normalize_page_url(source)
+
+        if url:
+            page_urls.append(url)
+
+    if not page_urls:
+        print("[apify] لا توجد صفحات في FACEBOOK_PAGES")
+        return []
+
+    payload = {
+        "pageUrls": page_urls,
+        "maxPostsPerPage": MAX_POSTS_PER_PAGE,
+        "postsFrom": "1 day",
+        "postsUntil": "",
+        "includeComments": False,
+        "maxCommentsPerPost": 0,
+        "maxRepliesPerComment": 0,
+        "proxyConfiguration": {
+            "useApifyProxy": True
+        },
+    }
+
+    headers = {
+        "Authorization": f"Bearer {APIFY_API_TOKEN}",
+        "Content-Type": "application/json",
+    }
+
+    print(
+        f"[apify] بدء جلب المنشورات من "
+        f"{len(page_urls)} مصدرًا..."
+    )
 
     try:
-        articles = page.locator('[role="article"]').all()
-    except Exception:
-        articles = []
+        response = requests.post(
+            APIFY_ENDPOINT,
+            headers=headers,
+            json=payload,
+            timeout=APIFY_TIMEOUT_SECONDS,
+        )
+    except requests.RequestException as exc:
+        raise RuntimeError(
+            f"تعذر الاتصال بـ Apify: {exc}"
+        ) from exc
 
-    for article in articles:
-        try:
-            post_time = _extract_post_time(article)
+    if response.status_code != 200:
+        body = response.text[:2000]
 
-            # لا نقبل منشورًا لا نستطيع تحديد وقته،
-            # لأن المشروع يعمل على نافذة زمنية محددة.
-            if post_time is None:
-                continue
+        raise RuntimeError(
+            f"Apify أعاد HTTP {response.status_code}: {body}"
+        )
 
-            if post_time < cutoff:
-                continue
+    try:
+        data = response.json()
+    except ValueError as exc:
+        raise RuntimeError(
+            "Apify أعاد استجابة ليست JSON."
+        ) from exc
 
-            text = _extract_text(article)
+    if not isinstance(data, list):
+        raise RuntimeError(
+            "صيغة استجابة Apify غير متوقعة: "
+            f"{type(data).__name__}"
+        )
 
-            if not text:
-                continue
+    print(
+        f"[apify] تم استلام {len(data)} سجل من Apify"
+    )
 
-            post_url = _extract_post_url(article, source)
-
-            image_url = _extract_image(article)
-
-            if not image_url:
-                continue
-
-            post_id = post_url
-
-            if not post_id:
-                post_id = f"{source}:{post_time.isoformat()}:{text[:100]}"
-
-            if post_id in seen_ids:
-                continue
-
-            seen_ids.add(post_id)
-
-            results.append(
-                {
-                    "id": str(post_id),
-                    "source_url": post_url,
-                    "text": text,
-                    "image_url": image_url,
-                }
-            )
-
-        except Exception:
-            continue
-
-    return results
+    return data
 
 
 def fetch_recent_posts():
     """
-    يرجع المنشورات العامة الجديدة خلال آخر FETCH_WINDOW_HOURS ساعة.
+    يرجع المنشورات المؤهلة خلال آخر FETCH_WINDOW_HOURS ساعة.
+
+    يتم جلب أحدث منشورات الصفحات من Apify ثم التصفية محليًا
+    للتأكد من الالتزام بنافذة المشروع.
     """
 
     cutoff = datetime.now(timezone.utc) - timedelta(
         hours=config.FETCH_WINDOW_HOURS
     )
 
+    try:
+        raw_items = _fetch_from_apify()
+    except Exception as exc:
+        print(f"[apify] فشل جلب المنشورات: {exc}")
+        return []
+
     results = []
-    global_seen = set()
+    seen_ids = set()
 
-    with sync_playwright() as playwright:
-        browser = playwright.chromium.launch(
-            headless=True,
-            args=[
-                "--disable-blink-features=AutomationControlled",
-                "--no-sandbox",
-                "--disable-dev-shm-usage",
-            ],
+    source_stats = {}
+
+    for item in raw_items:
+        if not isinstance(item, dict):
+            continue
+
+        if not _is_post_record(item):
+            continue
+
+        post_id = item.get("post_id")
+
+        if not post_id:
+            post_id = item.get("url")
+
+        if not post_id:
+            continue
+
+        post_id = str(post_id)
+
+        if post_id in seen_ids:
+            continue
+
+        post_time = _parse_post_time(item)
+
+        if post_time is None:
+            print(
+                f"[apify] تجاهل المنشور {post_id}: "
+                "تعذر معرفة وقت النشر"
+            )
+            continue
+
+        if post_time < cutoff:
+            continue
+
+        text = _extract_text(item)
+
+        if not text:
+            print(
+                f"[apify] تجاهل المنشور {post_id}: "
+                "لا يوجد نص"
+            )
+            continue
+
+        image_url = _extract_image_url(item)
+
+        if not image_url:
+            print(
+                f"[apify] تجاهل المنشور {post_id}: "
+                "لا توجد صورة"
+            )
+            continue
+
+        source_url = item.get("url")
+
+        if not source_url:
+            source_url = item.get("profileUrl")
+
+        if not source_url:
+            source_url = ""
+
+        source_url = str(source_url)
+
+        seen_ids.add(post_id)
+
+        results.append(
+            {
+                "id": post_id,
+                "source_url": source_url,
+                "text": text,
+                "image_url": image_url,
+            }
         )
 
-        context = browser.new_context(
-            viewport={"width": 1365, "height": 900},
-            locale="ar-SA",
-            timezone_id="Asia/Riyadh",
-            user_agent=(
-                "Mozilla/5.0 (X11; Linux x86_64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/131.0.0.0 Safari/537.36"
-            ),
+        profile_url = item.get("profileUrl") or "غير معروف"
+
+        source_stats[profile_url] = (
+            source_stats.get(profile_url, 0) + 1
         )
-
-        page = context.new_page()
-
-        try:
-            for source in config.FACEBOOK_PAGES:
-                page_url = _normalize_url(source)
-
-                raw_count = 0
-                kept_count = 0
-
-                print(f"[fb_browser] بدء جلب: {source}")
-
-                try:
-                    response = page.goto(
-                        page_url,
-                        wait_until="domcontentloaded",
-                        timeout=45000,
-                    )
-
-                    if response:
-                        print(
-                            f"[fb_browser] {source}: "
-                            f"HTTP {response.status}"
-                        )
-
-                    page.wait_for_timeout(5000)
-
-                    if _looks_like_login_page(page):
-                        print(
-                            f"[fb_browser] {source}: "
-                            "فيسبوك أعاد صفحة تسجيل الدخول."
-                        )
-                        continue
-
-                    if _looks_like_challenge_page(page):
-                        print(
-                            f"[fb_browser] {source}: "
-                            "فيسبوك أعاد صفحة تحقق/حماية."
-                        )
-                        continue
-
-                    # تحميل المزيد من المنشورات عن طريق التمرير.
-                    for _ in range(3):
-                        page.mouse.wheel(0, 3000)
-                        page.wait_for_timeout(2500)
-
-                    try:
-                        raw_count = page.locator(
-                            '[role="article"]'
-                        ).count()
-                    except Exception:
-                        raw_count = 0
-
-                    source_posts = _collect_page_posts(
-                        page,
-                        page_url,
-                        cutoff,
-                    )
-
-                    for item in source_posts:
-                        if item["id"] in global_seen:
-                            continue
-
-                        global_seen.add(item["id"])
-                        results.append(item)
-                        kept_count += 1
-
-                    print(
-                        f"[fb_browser] {source}: "
-                        f"تم العثور على {raw_count} عنصر منشور، "
-                        f"تم قبول {kept_count}"
-                    )
-
-                    if raw_count == 0:
-                        print(
-                            f"[fb_browser] {source}: "
-                            "لم تظهر عناصر role=article. "
-                            "قد يكون فيسبوك أخفى المحتوى أو غيّر بنية الصفحة."
-                        )
-
-                except PlaywrightTimeoutError:
-                    print(
-                        f"[fb_browser] {source}: "
-                        "انتهت مهلة تحميل الصفحة."
-                    )
-
-                except Exception as exc:
-                    print(
-                        f"[fb_browser] {source}: "
-                        f"خطأ أثناء الجلب: {exc}"
-                    )
-
-        finally:
-            context.close()
-            browser.close()
 
     print(
-        f"[fb_browser] انتهى الجلب: "
+        f"[apify] بعد تصفية آخر "
+        f"{config.FETCH_WINDOW_HOURS} ساعات: "
         f"{len(results)} منشور مؤهل"
     )
+
+    for source, count in source_stats.items():
+        print(
+            f"[apify] {source}: "
+            f"{count} منشور مؤهل"
+        )
 
     return results
