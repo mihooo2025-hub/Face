@@ -11,6 +11,7 @@ permissions:
 jobs:
   run-pipeline:
     runs-on: ubuntu-latest
+
     steps:
       - uses: actions/checkout@v4
 
@@ -19,7 +20,9 @@ jobs:
           python-version: "3.11"
 
       - name: تثبيت المتطلبات
-        run: pip install -r requirements.txt
+        run: |
+          pip install -r requirements.txt
+          playwright install --with-deps chromium
 
       - name: تشغيل الدورة
         env:
