@@ -1,46 +1,62 @@
 """
-جلب المنشورات العامة من فيسبوك عبر RSS-Bridge.
+جلب منشورات Facebook عبر RSS-Bridge.
 
-لا يستخدم:
-- Playwright
-- facebook-scraper
-- Apify
-- Facebook Cookies
+الهدف:
+- الاعتماد على RSS-Bridge كحل مجاني بدون FACEBOOK_COOKIES.
+- تجربة أكثر من صيغة لطلب FacebookBridge.
+- عدم إيقاف الدورة إذا فشل مصدر واحد.
+- قبول Atom/RSS فقط إذا كانت الاستجابة Feed فعلية.
+- استخراج العنوان والنص والرابط والصورة ووقت النشر.
+- الاقتصار على المنشورات خلال نافذة FETCH_WINDOW_HOURS.
+- إزالة العناصر غير الصالحة قبل إرسالها إلى بقية المشروع.
 
-يحاول الوصول إلى RSS-Bridge باستخدام FacebookBridge ثم FB2Bridge،
-ويُبقي فقط المنشورات الواقعة ضمن آخر FETCH_WINDOW_HOURS ساعة.
-
-شكل النتيجة المتوافق مع main.py:
-{
-    "id": "...",
-    "source_url": "...",
-    "text": "...",
-    "image_url": "..."
-}
+ملاحظة:
+RSS-Bridge يعتمد على إمكانية الوصول إلى Facebook، لذلك لا يمكن ضمان
+نجاح جميع الصفحات إذا كان Facebook يمنع الوصول إليها أو يتطلب تسجيل الدخول.
 """
 
-import html
+import hashlib
 import re
 from datetime import datetime, timedelta, timezone
-from email.utils import parsedate_to_datetime
-from urllib.parse import urlencode
+from html import unescape
+from urllib.parse import quote, urljoin, urlparse
 
-import feedparser
 import requests
+import xml.etree.ElementTree as ET
 
 from . import config
 
 
-RSS_BRIDGE_BASE = "https://rss-bridge.org/bridge01/"
+# ---------------------------------------------------------------------
+# إعدادات RSS-Bridge
+# ---------------------------------------------------------------------
 
-REQUEST_TIMEOUT_SECONDS = 45
-MAX_ITEMS_PER_SOURCE = 30
+RSS_BRIDGE_URL = "https://rss-bridge.org/bridge01/"
 
+REQUEST_TIMEOUT = 30
+
+HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (X11; Linux x86_64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/131.0.0.0 Safari/537.36"
+    ),
+    "Accept": (
+        "application/atom+xml, application/rss+xml, "
+        "application/xml, text/xml;q=0.9, */*;q=0.8"
+    ),
+    "Accept-Language": "ar-SA,ar;q=0.9,en;q=0.8",
+    "Cache-Control": "no-cache",
+}
+
+
+# ---------------------------------------------------------------------
+# أدوات مساعدة
+# ---------------------------------------------------------------------
 
 def _normalize_source(source):
     """
-    يحول اسم المصدر أو المعرف الرقمي أو رابط Facebook
-    إلى قيمة مناسبة للـFacebookBridge.
+    يحول اسم الصفحة أو الرابط إلى قيمة مناسبة لـ RSS-Bridge.
     """
 
     source = str(source).strip()
@@ -48,621 +64,658 @@ def _normalize_source(source):
     if not source:
         return ""
 
-    # رابط profile.php?id=123...
-    match = re.search(
-        r"facebook\.com/profile\.php\?id=([^/?&]+)",
-        source,
-        re.IGNORECASE,
-    )
+    # إذا كان المستخدم وضع رابط Facebook كاملًا،
+    # نحاول استخراج الجزء الأخير منه.
+    if source.startswith("http://") or source.startswith("https://"):
+        parsed = urlparse(source)
 
-    if match:
-        return match.group(1)
+        path = parsed.path.strip("/")
 
-    # رابط عادي مثل:
-    # https://www.facebook.com/example
-    match = re.search(
-        r"facebook\.com/([^/?#]+)",
-        source,
-        re.IGNORECASE,
-    )
+        if path:
+            parts = [part for part in path.split("/") if part]
 
-    if match:
-        return match.group(1)
+            if parts:
+                return parts[0]
+
+        return source
 
     return source.strip("/")
 
 
-def _build_bridge_url(source, bridge_name, output_format):
+def _build_urls(source):
     """
-    يبني رابط RSS-Bridge بطريقة متوافقة مع FacebookBridge.
+    يبني عدة طلبات مجانية محتملة لنفس المصدر.
+
+    الصيغ تعتمد على FacebookBridge/FB2Bridge الموجودة في RSS-Bridge.
     """
 
     username = _normalize_source(source)
 
     if not username:
+        return []
+
+    encoded_username = quote(username, safe="")
+
+    urls = [
+        (
+            f"{RSS_BRIDGE_URL}"
+            f"?action=display"
+            f"&bridge=FacebookBridge"
+            f"&context=User"
+            f"&u={encoded_username}"
+            f"&media_type=all"
+            f"&limit=-1"
+            f"&format=Atom"
+        ),
+        (
+            f"{RSS_BRIDGE_URL}"
+            f"?action=display"
+            f"&bridge=FacebookBridge"
+            f"&context=User"
+            f"&u={encoded_username}"
+            f"&media_type=all"
+            f"&limit=-1"
+            f"&format=RSS"
+        ),
+        (
+            f"{RSS_BRIDGE_URL}"
+            f"?action=display"
+            f"&bridge=FB2Bridge"
+            f"&u={encoded_username}"
+            f"&abbrev_name=on"
+            f"&format=Atom"
+        ),
+        (
+            f"{RSS_BRIDGE_URL}"
+            f"?action=display"
+            f"&bridge=FB2Bridge"
+            f"&u={encoded_username}"
+            f"&abbrev_name=on"
+            f"&format=RSS"
+        ),
+    ]
+
+    # إزالة أي تكرار مع الحفاظ على الترتيب.
+    unique_urls = []
+    seen = set()
+
+    for url in urls:
+        if url not in seen:
+            seen.add(url)
+            unique_urls.append(url)
+
+    return unique_urls
+
+
+def _clean_html(value):
+    """
+    يحول HTML البسيط إلى نص نظيف.
+    """
+
+    if not value:
         return ""
 
-    params = {
-        "action": "display",
-        "bridge": bridge_name,
-        "context": "User",
-        "u": username,
-        "format": output_format,
-        "limit": str(MAX_ITEMS_PER_SOURCE),
-    }
+    value = unescape(str(value))
 
-    return RSS_BRIDGE_BASE + "?" + urlencode(params)
-
-
-def _clean_text(value):
-    """
-    يحول محتوى HTML إلى نص نظيف.
-    """
-
-    if value is None:
-        return ""
-
-    text = html.unescape(str(value))
-
-    text = re.sub(
+    value = re.sub(
         r"<br\s*/?>",
         "\n",
-        text,
+        value,
         flags=re.IGNORECASE,
     )
 
-    text = re.sub(
+    value = re.sub(
         r"</p\s*>",
-        "\n",
-        text,
+        "\n\n",
+        value,
         flags=re.IGNORECASE,
     )
 
-    text = re.sub(
+    value = re.sub(
         r"<[^>]+>",
         " ",
-        text,
+        value,
     )
 
-    text = re.sub(
-        r"[ \t]+",
-        " ",
-        text,
-    )
+    value = re.sub(r"\s+", " ", value)
 
-    text = re.sub(
-        r"\n[ \t]+",
-        "\n",
-        text,
-    )
-
-    text = re.sub(
-        r"\n{3,}",
-        "\n\n",
-        text,
-    )
-
-    return text.strip()
+    return value.strip()
 
 
-def _parse_entry_time(entry):
+def _extract_image_from_html(value):
     """
-    استخراج وقت المنشور من RSS/Atom.
+    يحاول استخراج أول صورة من محتوى RSS/Atom.
     """
 
-    for field in (
-        "published_parsed",
-        "updated_parsed",
-        "created_parsed",
-    ):
-        parsed_struct = entry.get(field)
+    if not value:
+        return None
 
-        if parsed_struct:
-            try:
-                return datetime(
-                    parsed_struct.tm_year,
-                    parsed_struct.tm_mon,
-                    parsed_struct.tm_mday,
-                    parsed_struct.tm_hour,
-                    parsed_struct.tm_min,
-                    parsed_struct.tm_sec,
-                    tzinfo=timezone.utc,
-                )
-            except (
-                AttributeError,
-                TypeError,
-                ValueError,
-            ):
-                pass
-
-    for field in (
-        "published",
-        "updated",
-        "created",
-        "pubDate",
-    ):
-        value = entry.get(field)
-
-        if not value:
-            continue
-
-        value = str(value).strip()
-
-        try:
-            parsed = parsedate_to_datetime(value)
-
-            if parsed.tzinfo is None:
-                parsed = parsed.replace(
-                    tzinfo=timezone.utc
-                )
-
-            return parsed.astimezone(timezone.utc)
-
-        except (
-            TypeError,
-            ValueError,
-            OverflowError,
-        ):
-            pass
-
-        try:
-            iso_value = value.replace(
-                "Z",
-                "+00:00",
-            )
-
-            parsed = datetime.fromisoformat(
-                iso_value
-            )
-
-            if parsed.tzinfo is None:
-                parsed = parsed.replace(
-                    tzinfo=timezone.utc
-                )
-
-            return parsed.astimezone(timezone.utc)
-
-        except (
-            TypeError,
-            ValueError,
-        ):
-            pass
-
-    return None
-
-
-def _extract_image(entry):
-    """
-    يحاول استخراج صورة المنشور من RSS/Atom.
-    """
-
-    media_content = entry.get(
-        "media_content"
-    )
-
-    if isinstance(media_content, list):
-        for media in media_content:
-            if not isinstance(media, dict):
-                continue
-
-            url = media.get("url")
-
-            if url:
-                return str(url)
-
-    media_thumbnail = entry.get(
-        "media_thumbnail"
-    )
-
-    if isinstance(media_thumbnail, list):
-        for media in media_thumbnail:
-            if not isinstance(media, dict):
-                continue
-
-            url = media.get("url")
-
-            if url:
-                return str(url)
-
-    enclosures = entry.get(
-        "enclosures"
-    )
-
-    if isinstance(enclosures, list):
-        for enclosure in enclosures:
-            if not isinstance(enclosure, dict):
-                continue
-
-            url = (
-                enclosure.get("href")
-                or enclosure.get("url")
-            )
-
-            if not url:
-                continue
-
-            content_type = str(
-                enclosure.get("type", "")
-            ).lower()
-
-            if (
-                not content_type
-                or content_type.startswith("image/")
-            ):
-                return str(url)
-
-    raw_parts = []
-
-    summary = entry.get("summary")
-
-    if summary:
-        raw_parts.append(str(summary))
-
-    description = entry.get("description")
-
-    if description:
-        raw_parts.append(
-            str(description)
-        )
-
-    content = entry.get("content")
-
-    if isinstance(content, list):
-        for item in content:
-            if not isinstance(item, dict):
-                continue
-
-            value = item.get("value")
-
-            if value:
-                raw_parts.append(
-                    str(value)
-                )
-
-    raw_html = "\n".join(raw_parts)
+    value = unescape(str(value))
 
     patterns = [
         r'<img[^>]+src=["\']([^"\']+)["\']',
-        r'<image[^>]*>\s*<url>([^<]+)</url>',
+        r'<img[^>]+src=([^ >]+)',
     ]
 
     for pattern in patterns:
         match = re.search(
             pattern,
-            raw_html,
+            value,
             flags=re.IGNORECASE,
         )
 
         if match:
-            return html.unescape(
-                match.group(1)
-            ).strip()
+            image_url = match.group(1).strip()
+
+            if image_url:
+                return image_url
 
     return None
 
 
-def _extract_text(entry):
+def _parse_datetime(value):
     """
-    استخراج نص المنشور.
+    يدعم أشهر صيغ التاريخ في RSS/Atom.
     """
 
-    values = []
+    if not value:
+        return None
 
-    for field in (
-        "summary",
-        "description",
-    ):
-        value = entry.get(field)
+    value = str(value).strip()
 
-        if value:
-            values.append(
-                _clean_text(value)
+    # Unix timestamp
+    try:
+        timestamp = int(value)
+
+        if timestamp > 1000000000:
+            return datetime.fromtimestamp(
+                timestamp,
+                tz=timezone.utc,
             )
+    except (ValueError, TypeError, OverflowError):
+        pass
 
-    content = entry.get("content")
+    # ISO 8601
+    try:
+        normalized = value.replace("Z", "+00:00")
 
-    if isinstance(content, list):
-        for item in content:
-            if not isinstance(item, dict):
-                continue
+        parsed = datetime.fromisoformat(normalized)
 
-            value = item.get("value")
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
 
-            if value:
-                values.append(
-                    _clean_text(value)
-                )
+        return parsed.astimezone(timezone.utc)
 
-    unique_values = []
+    except ValueError:
+        pass
 
-    for value in values:
-        if value and value not in unique_values:
-            unique_values.append(value)
+    # RFC 2822 / RSS
+    from email.utils import parsedate_to_datetime
 
-    if unique_values:
-        return "\n\n".join(
-            unique_values
-        ).strip()
+    try:
+        parsed = parsedate_to_datetime(value)
 
-    title = entry.get("title")
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
 
-    if title:
-        return _clean_text(title)
+        return parsed.astimezone(timezone.utc)
+
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def _find_text(element, names):
+    """
+    يبحث عن أول عنصر XML من الأسماء المحددة.
+    """
+
+    for name in names:
+        found = element.find(name)
+
+        if found is not None and found.text:
+            return found.text.strip()
 
     return ""
 
 
-def _extract_entry_id(entry):
+def _find_atom_link(element):
     """
-    معرف ثابت للمنشور.
-    """
-
-    for field in (
-        "id",
-        "guid",
-        "link",
-    ):
-        value = entry.get(field)
-
-        if value:
-            return str(value).strip()
-
-    return None
-
-
-def _extract_source_url(entry, fallback):
-    """
-    رابط المنشور الأصلي.
+    يستخرج رابط entry من Atom.
     """
 
-    link = entry.get("link")
+    atom_namespace = "{http://www.w3.org/2005/Atom}"
+
+    for link in element.findall(f"{atom_namespace}link"):
+        href = link.attrib.get("href")
+
+        if href:
+            return href.strip()
+
+    # fallback
+    for link in element.findall("link"):
+        href = link.attrib.get("href")
+
+        if href:
+            return href.strip()
+
+        if link.text:
+            return link.text.strip()
+
+    return ""
+
+
+def _parse_feed(xml_text, source, cutoff):
+    """
+    يحلل Atom أو RSS ويعيد العناصر الصالحة.
+    """
+
+    try:
+        root = ET.fromstring(xml_text)
+    except ET.ParseError as exc:
+        print(
+            f"[rss_bridge] {source}: "
+            f"تعذر تحليل XML: {exc}"
+        )
+        return []
+
+    results = []
+
+    root_tag = root.tag.lower()
+
+    is_atom = (
+        "feed" in root_tag
+        or "atom" in root_tag
+    )
+
+    if is_atom:
+        atom_namespace = "{http://www.w3.org/2005/Atom}"
+
+        entries = root.findall(f"{atom_namespace}entry")
+
+        if not entries:
+            entries = root.findall("entry")
+
+        for entry in entries:
+            title = _find_text(
+                entry,
+                [
+                    f"{atom_namespace}title",
+                    "title",
+                ],
+            )
+
+            content = _find_text(
+                entry,
+                [
+                    f"{atom_namespace}content",
+                    f"{atom_namespace}summary",
+                    "content",
+                    "summary",
+                ],
+            )
+
+            link = _find_atom_link(entry)
+
+            published = _find_text(
+                entry,
+                [
+                    f"{atom_namespace}published",
+                    f"{atom_namespace}updated",
+                    "published",
+                    "updated",
+                ],
+            )
+
+            author = ""
+
+            author_element = entry.find(
+                f"{atom_namespace}author/"
+                f"{atom_namespace}name"
+            )
+
+            if author_element is not None and author_element.text:
+                author = author_element.text.strip()
+
+            _add_feed_item(
+                results=results,
+                title=title,
+                content=content,
+                link=link,
+                published=published,
+                source=source,
+                author=author,
+                cutoff=cutoff,
+            )
+
+    else:
+        # RSS 2.0 / RSS 1.0
+        channel = root.find("channel")
+
+        if channel is not None:
+            items = channel.findall("item")
+        else:
+            items = root.findall(".//item")
+
+        for item in items:
+            title = _find_text(
+                item,
+                ["title"],
+            )
+
+            content = _find_text(
+                item,
+                [
+                    "description",
+                    "content:encoded",
+                ],
+            )
+
+            link = _find_text(
+                item,
+                ["link"],
+            )
+
+            if not link:
+                guid = _find_text(
+                    item,
+                    ["guid"],
+                )
+
+                if guid.startswith("http"):
+                    link = guid
+
+            published = _find_text(
+                item,
+                [
+                    "pubDate",
+                    "published",
+                    "updated",
+                ],
+            )
+
+            author = _find_text(
+                item,
+                [
+                    "author",
+                    "dc:creator",
+                ],
+            )
+
+            _add_feed_item(
+                results=results,
+                title=title,
+                content=content,
+                link=link,
+                published=published,
+                source=source,
+                author=author,
+                cutoff=cutoff,
+            )
+
+    return results
+
+
+def _add_feed_item(
+    results,
+    title,
+    content,
+    link,
+    published,
+    source,
+    author,
+    cutoff,
+):
+    """
+    يحول عنصر RSS/Atom إلى الشكل الذي يستخدمه المشروع.
+    """
+
+    post_time = _parse_datetime(published)
+
+    # المشروع يعتمد على نافذة زمنية؛
+    # لذلك لا نقبل عنصرًا بلا تاريخ.
+    if post_time is None:
+        return
+
+    if post_time < cutoff:
+        return
+
+    title = _clean_html(title)
+    content_html = content or ""
+
+    text = _clean_html(content_html)
+
+    if not text:
+        text = title
+
+    if not text:
+        return
+
+    link = unescape(str(link or "")).strip()
 
     if link:
-        return str(link).strip()
+        source_url = urljoin(
+            "https://www.facebook.com/",
+            link,
+        )
+    else:
+        source_url = f"https://www.facebook.com/{source}"
 
-    links = entry.get("links")
+    image_url = _extract_image_from_html(content_html)
 
-    if isinstance(links, list):
-        for item in links:
-            if not isinstance(item, dict):
-                continue
+    # بعض خلاصات RSS-Bridge تضع الصورة داخل enclosure.
+    # هذه القيمة ستُضاف لاحقًا من XML إن كانت متاحة، لذلك لا نعتمد
+    # عليها هنا وحدها.
 
-            href = item.get("href")
+    unique_base = (
+        link
+        or f"{source}|{post_time.isoformat()}|{text[:200]}"
+    )
 
-            if href:
-                return str(href).strip()
+    post_id = hashlib.sha1(
+        unique_base.encode("utf-8")
+    ).hexdigest()
 
-    return fallback
-
-
-def _response_has_login_or_block(response):
-    """
-    التحقق من أن RSS-Bridge أعاد صفحة تسجيل دخول أو حظر
-    بدل خلاصة RSS حقيقية.
-    """
-
-    text = response.text.lower()
-
-    markers = [
-        "captcha",
-        "facebook wants rss-bridge",
-        "log in",
-        "login",
-        "checkpoint",
-        "security check",
-        "unable to fetch",
-        "could not fetch",
-    ]
-
-    return any(
-        marker in text
-        for marker in markers
+    results.append(
+        {
+            "id": f"rss:{post_id}",
+            "source_url": source_url,
+            "text": text,
+            "image_url": image_url,
+            "published_at": post_time,
+            "title": title,
+            "author": author,
+        }
     )
 
 
-def _fetch_feed(url):
+def _extract_feed_images(xml_text):
     """
-    تحميل وتحليل RSS/Atom.
+    يستخرج صور enclosure/media من XML.
+
+    يعيد الصور بنفس ترتيب عناصر RSS/Atom تقريبًا.
     """
 
-    headers = {
-        "User-Agent": (
-            "Mozilla/5.0 "
-            "(compatible; FacebookRSSFetcher/1.0)"
-        ),
-        "Accept": (
-            "application/atom+xml,"
-            "application/rss+xml,"
-            "application/xml,"
-            "text/xml,"
-            "*/*"
-        ),
-    }
+    images = []
 
     try:
-        response = requests.get(
+        root = ET.fromstring(xml_text)
+    except ET.ParseError:
+        return images
+
+    for element in root.iter():
+        tag = element.tag.lower()
+
+        if (
+            tag.endswith("enclosure")
+            or tag.endswith("content")
+            or tag.endswith("thumbnail")
+        ):
+            url = (
+                element.attrib.get("url")
+                or element.attrib.get("href")
+            )
+
+            if url:
+                url = unescape(url.strip())
+
+                if url.startswith("http"):
+                    images.append(url)
+
+    return images
+
+
+def _response_is_feed(response):
+    """
+    يتحقق من أن الاستجابة تبدو كـ RSS/Atom فعلية.
+    """
+
+    content_type = (
+        response.headers.get(
+            "Content-Type",
+            "",
+        )
+        .lower()
+    )
+
+    text = response.text.lstrip()
+
+    if (
+        "xml" in content_type
+        or "atom" in content_type
+        or "rss" in content_type
+    ):
+        return (
+            text.startswith("<?xml")
+            or "<feed" in text[:1000]
+            or "<rss" in text[:1000]
+        )
+
+    return (
+        text.startswith("<?xml")
+        or "<feed" in text[:1000]
+        or "<rss" in text[:1000]
+    )
+
+
+def _request_feed(session, url, source, attempt_number):
+    """
+    ينفذ طلبًا واحدًا إلى RSS-Bridge.
+    """
+
+    try:
+        response = session.get(
             url,
-            headers=headers,
-            timeout=REQUEST_TIMEOUT_SECONDS,
+            headers=HEADERS,
+            timeout=REQUEST_TIMEOUT,
+            allow_redirects=True,
         )
 
     except requests.RequestException as exc:
         print(
-            f"[rss_bridge] فشل الاتصال: {exc}"
+            f"[rss_bridge] {source}: "
+            f"خطأ اتصال في المحاولة {attempt_number}: {exc}"
         )
         return None
 
+    content_type = response.headers.get(
+        "Content-Type",
+        "",
+    )
+
     print(
-        "[rss_bridge] "
+        f"[rss_bridge] {source}: "
+        f"المحاولة {attempt_number} "
         f"HTTP={response.status_code} "
-        f"Content-Type="
-        f"{response.headers.get('content-type', '')}"
+        f"Content-Type={content_type}"
     )
 
     if response.status_code != 200:
-        print(
-            "[rss_bridge] "
-            f"محتوى الخطأ: "
-            f"{response.text[:500]}"
+        # لا نطبع كامل صفحة HTML حتى لا يمتلئ سجل GitHub.
+        preview = response.text[:500].replace(
+            "\n",
+            " ",
         )
+
+        print(
+            f"[rss_bridge] {source}: "
+            f"الاستجابة غير ناجحة: {preview}"
+        )
+
         return None
 
-    if _response_has_login_or_block(
-        response
-    ):
-        print(
-            "[rss_bridge] "
-            "الخدمة أعادت صفحة تسجيل دخول/حماية "
-            "بدل خلاصة RSS."
+    if not _response_is_feed(response):
+        preview = response.text[:500].replace(
+            "\n",
+            " ",
         )
+
+        print(
+            f"[rss_bridge] {source}: "
+            "الاستجابة ليست RSS/Atom صالحة. "
+            f"المحتوى: {preview}"
+        )
+
         return None
 
-    parsed = feedparser.parse(
-        response.content
-    )
+    return response
 
-    if parsed.bozo:
-        error = getattr(
-            parsed,
-            "bozo_exception",
-            None,
+
+def _fetch_source(session, source, cutoff):
+    """
+    يحاول جميع صيغ RSS-Bridge المتاحة للمصدر.
+    """
+
+    urls = _build_urls(source)
+
+    if not urls:
+        print(
+            f"[rss_bridge] {source}: "
+            "معرّف الصفحة فارغ."
         )
+        return []
 
-        if error:
-            print(
-                "[rss_bridge] "
-                f"تحذير تحليل RSS: {error}"
-            )
-
-    return parsed
-
-
-def _fetch_source(source, cutoff):
-    """
-    يجرب عدة صيغ للجلب.
-    """
-
-    attempts = [
-        (
-            "FacebookBridge",
-            "Atom",
-        ),
-        (
-            "FacebookBridge",
-            "RSS",
-        ),
-        (
-            "FB2Bridge",
-            "Atom",
-        ),
-    ]
-
-    for bridge_name, output_format in attempts:
-        url = _build_bridge_url(
+    for index, url in enumerate(urls, start=1):
+        response = _request_feed(
+            session,
+            url,
             source,
-            bridge_name,
-            output_format,
+            index,
         )
 
-        if not url:
+        if response is None:
             continue
 
-        print(
-            f"[rss_bridge] {source}: "
-            f"محاولة {bridge_name} / "
-            f"{output_format}"
+        posts = _parse_feed(
+            response.text,
+            source,
+            cutoff,
         )
 
-        parsed = _fetch_feed(url)
-
-        if parsed is None:
-            continue
-
-        entries = parsed.entries
-
-        if not entries:
+        if not posts:
             print(
                 f"[rss_bridge] {source}: "
-                f"{bridge_name} لم يعطِ عناصر."
+                f"الاستجابة صحيحة لكن لم نجد منشورات "
+                f"ضمن آخر {config.FETCH_WINDOW_HOURS} ساعات."
             )
+
+            # لا ننتقل بالضرورة إلى جسر آخر إذا كان الـ Feed صالحًا
+            # لكنه لا يحتوي منشورات حديثة.
             continue
 
-        accepted = []
-
-        for entry in entries:
-            post_id = _extract_entry_id(
-                entry
-            )
-
-            if not post_id:
-                continue
-
-            post_time = _parse_entry_time(
-                entry
-            )
-
-            if post_time is None:
-                print(
-                    f"[rss_bridge] {source}: "
-                    f"{post_id}: لا يمكن تحديد وقت النشر."
-                )
-                continue
-
-            if post_time < cutoff:
-                continue
-
-            text = _extract_text(
-                entry
-            )
-
-            if not text:
-                print(
-                    f"[rss_bridge] {source}: "
-                    f"{post_id}: بدون نص."
-                )
-                continue
-
-            image_url = _extract_image(
-                entry
-            )
-
-            if not image_url:
-                print(
-                    f"[rss_bridge] {source}: "
-                    f"{post_id}: بدون صورة."
-                )
-                continue
-
-            source_url = _extract_source_url(
-                entry,
-                (
-                    "https://www.facebook.com/"
-                    + _normalize_source(source)
-                ),
-            )
-
-            accepted.append(
-                {
-                    "id": str(post_id),
-                    "source_url": source_url,
-                    "text": text,
-                    "image_url": image_url,
-                }
-            )
-
-        if accepted:
-            print(
-                f"[rss_bridge] {source}: "
-                f"تم قبول {len(accepted)} منشور."
-            )
-            return accepted
-
-        print(
-            f"[rss_bridge] {source}: "
-            "تم العثور على عناصر، "
-            "لكن لم يوجد منشور مؤهل خلال "
-            f"آخر {config.FETCH_WINDOW_HOURS} ساعات."
+        # إضافة الصور من enclosure/media إذا كانت متوفرة.
+        feed_images = _extract_feed_images(
+            response.text
         )
+
+        if feed_images:
+            for index, item in enumerate(posts):
+                if (
+                    not item.get("image_url")
+                    and index < len(feed_images)
+                ):
+                    item["image_url"] = feed_images[index]
+
+        return posts
 
     print(
         f"[rss_bridge] {source}: "
@@ -672,10 +725,23 @@ def _fetch_source(source, cutoff):
     return []
 
 
+# ---------------------------------------------------------------------
+# الدالة الرئيسية التي يستخدمها src.main
+# ---------------------------------------------------------------------
+
 def fetch_recent_posts():
     """
-    جلب منشورات جميع المصادر خلال آخر
-    FETCH_WINDOW_HOURS ساعة.
+    يجلب المنشورات الجديدة من جميع صفحات Facebook
+    خلال آخر FETCH_WINDOW_HOURS ساعة.
+
+    يرجع قائمة بالشكل:
+
+    {
+        "id": "...",
+        "source_url": "...",
+        "text": "...",
+        "image_url": "...",
+    }
     """
 
     cutoff = (
@@ -686,44 +752,85 @@ def fetch_recent_posts():
     )
 
     results = []
-    seen_ids = set()
+    global_seen = set()
 
-    print(
-        "[rss_bridge] بدء الجلب..."
-    )
+    session = requests.Session()
 
-    for source in config.FACEBOOK_PAGES:
-        try:
-            source_results = _fetch_source(
-                source,
-                cutoff,
-            )
+    try:
+        print("[rss_bridge] بدء الجلب...")
 
-            for item in source_results:
-                if item["id"] in seen_ids:
-                    continue
+        for source in config.FACEBOOK_PAGES:
+            source = str(source).strip()
 
-                seen_ids.add(
-                    item["id"]
-                )
+            if not source:
+                continue
 
-                results.append(item)
-
-        except Exception as exc:
             print(
                 f"[rss_bridge] {source}: "
-                f"خطأ: {exc}"
+                "بدء محاولة الجلب"
             )
 
-    results.sort(
-        key=lambda item: item.get(
-            "source_url",
-            "",
-        )
-    )
+            try:
+                posts = _fetch_source(
+                    session,
+                    source,
+                    cutoff,
+                )
+
+                accepted = 0
+
+                for item in posts:
+                    item_id = item.get("id")
+
+                    if not item_id:
+                        continue
+
+                    if item_id in global_seen:
+                        continue
+
+                    # يجب أن يحتوي المنشور على نص.
+                    if not item.get("text", "").strip():
+                        continue
+
+                    global_seen.add(item_id)
+
+                    results.append(
+                        {
+                            "id": item_id,
+                            "source_url": item.get(
+                                "source_url",
+                                source,
+                            ),
+                            "text": item.get(
+                                "text",
+                                "",
+                            ).strip(),
+                            "image_url": item.get(
+                                "image_url"
+                            ),
+                        }
+                    )
+
+                    accepted += 1
+
+                print(
+                    f"[rss_bridge] {source}: "
+                    f"تم قبول {accepted} منشور."
+                )
+
+            except Exception as exc:
+                # فشل صفحة واحدة لا يجب أن يوقف بقية الصفحات.
+                print(
+                    f"[rss_bridge] {source}: "
+                    f"خطأ غير متوقع: {exc}"
+                )
+                continue
+
+    finally:
+        session.close()
 
     print(
-        "[rss_bridge] انتهى الجلب: "
+        f"[rss_bridge] انتهى الجلب: "
         f"{len(results)} منشور مؤهل."
     )
 
