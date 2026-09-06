@@ -1,4 +1,3 @@
 requests>=2.31
-playwright>=1.55
 lxml[html_clean]
 lxml_html_clean
