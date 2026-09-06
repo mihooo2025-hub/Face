@@ -27,8 +27,46 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: تشغيل الدورة
+      - name: تشغيل RSS-Bridge محليًا
+        run: |
+          docker pull rssbridge/rss-bridge:latest
+
+          docker rm -f rss-bridge >/dev/null 2>&1 || true
+
+          docker run \
+            -d \
+            --name rss-bridge \
+            -p 127.0.0.1:8080:80 \
+            rssbridge/rss-bridge:latest
+
+          echo "انتظار تشغيل RSS-Bridge..."
+
+          for i in {1..30}; do
+            if curl -fsS \
+              --max-time 5 \
+              http://127.0.0.1:8080/ \
+              >/dev/null; then
+
+              echo "RSS-Bridge يعمل بنجاح."
+              break
+            fi
+
+            if [ "$i" -eq 30 ]; then
+              echo "فشل تشغيل RSS-Bridge."
+              docker logs rss-bridge || true
+              exit 1
+            fi
+
+            sleep 2
+          done
+
+          echo "RSS-Bridge جاهز على:"
+          echo "http://127.0.0.1:8080/"
+
+      - name: تشغيل دورة الأخبار
         env:
+          RSS_BRIDGE_BASE: http://127.0.0.1:8080/
+
           GEMINI_API_KEY_PRIMARY: ${{ secrets.GEMINI_API_KEY_PRIMARY }}
           GEMINI_API_KEY_FALLBACK: ${{ secrets.GEMINI_API_KEY_FALLBACK }}
 
@@ -40,13 +78,21 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
 
-        run: python -m src.main
+        run: |
+          python -m src.main
+
+      - name: إيقاف RSS-Bridge
+        if: always()
+        run: |
+          docker logs rss-bridge || true
+          docker rm -f rss-bridge || true
 
       - name: حفظ حالة التكرار وإعادة المحاولة
         if: always()
         run: |
           git config user.name "news-bot"
           git config user.email "news-bot@users.noreply.github.com"
+
           git add data/state.json
 
           if git diff --cached --quiet; then
