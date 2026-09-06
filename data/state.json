@@ -1,10 +1,15 @@
 {
   "published": [
-    "urn:sha1:4f46c5953aed56234ee336d3957e9654cc278445"
+    "urn:sha1:4f46c5953aed56234ee336d3957e9654cc278445",
+    "rss:c5cf1af593a798f89f1a4c6beba752ca1cb231cc",
+    "rss:94ac1a4fc63f22335aa2b06b884b1392d247a303"
   ],
   "ignored": [
     "urn:sha1:84c5e4fab9171b7101ebe8adf57e034a84ac96ff",
-    "urn:sha1:d0dc21eb40f833bc105d7b1c91de8ffa81134927"
+    "urn:sha1:d0dc21eb40f833bc105d7b1c91de8ffa81134927",
+    "rss:b143d7ff056e9d1288f156459cf7d40f7dd72653",
+    "rss:154e7ceadec37f1b5da7ed925c1a350d4436d775",
+    "rss:2886fd66acf1b339f7bae1e0ac151c8a8d286b4e"
   ],
   "pending": {}
 }
