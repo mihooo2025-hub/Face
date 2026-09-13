@@ -31,7 +31,11 @@
     "rss:d651e8e9c1f23d99cf863f584b549d697b684929",
     "rss:65b119bf3c150b3a59a29ef4a7c88bfb0d90da73",
     "rss:c233354dd77049a176d2a66fed47c1ca3d5b1076",
-    "rss:3707dd0186454659217beff7d4629932404a8ced"
+    "rss:3707dd0186454659217beff7d4629932404a8ced",
+    "rss:75ab8cab3fb363148fec549dc5ed03da1af9dd1c",
+    "rss:da8abce87ffe297a78d4a31e61ac8062f57bb5bd",
+    "rss:4c95e4f3d23c328699ed008828399fa9411434f8",
+    "rss:d4f28896305d2df10446d711a564e83b5c3508c5"
   ],
   "ignored": [
     "urn:sha1:84c5e4fab9171b7101ebe8adf57e034a84ac96ff",
@@ -103,7 +107,9 @@
     "rss:e4930152e399527e3ecd9b555d67dc4eeb389263",
     "rss:5ed5dab8ec59aede1af1b81497e97839db4279e1",
     "rss:7f07dd45de2ef9ec4efa7e20e991af5fb5ce333f",
-    "rss:c8ddc9fcecaa62dcf478db57685501b14e137853"
+    "rss:c8ddc9fcecaa62dcf478db57685501b14e137853",
+    "rss:f03c3dbba201e0334c3810f982ba1b50d2e415c0",
+    "rss:04fafad7f12a04c741cf415908dee7152bd71186"
   ],
   "pending": {}
 }
