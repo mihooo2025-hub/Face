@@ -179,7 +179,14 @@
     "rss:391500a5a889834120d651a86787b21a08e7e262",
     "rss:30295e0aeedb94f4dab7feb62ea11f33df96e5dd",
     "rss:9a1ff67118552b1fe4d7754992342d60a78b20e8",
-    "rss:5e5140ae50eb08a5c1d99743c671b641ad094a76"
+    "rss:5e5140ae50eb08a5c1d99743c671b641ad094a76",
+    "rss:090e11521ae94665da2c7cefc06d7ce706700920",
+    "rss:976d4d836b2f1fc317266e536d2084b49d853086"
   ],
-  "pending": {}
+  "pending": {
+    "rss:c4b291e3ccab44a8c8210f94011ae38b2f58f57f": {
+      "cycle_attempts": 1,
+      "first_seen": "2026-09-19T03:01:02.935985+00:00"
+    }
+  }
 }
