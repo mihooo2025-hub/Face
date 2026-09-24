@@ -91,7 +91,8 @@
     "rss:8e1f79bb1b073c4ff943646a13c3b75c4367cae9",
     "rss:4f9337be52e0317084ca7f01484967f7b0623473",
     "rss:04753087c20c1acffb3931d355b3a3a796b4db84",
-    "rss:0cab80fe1c1bef0cc8c4248c5f97864383a864b1"
+    "rss:0cab80fe1c1bef0cc8c4248c5f97864383a864b1",
+    "rss:f8423980db37955bdd92e19326a7b2b5a08dd225"
   ],
   "ignored": [
     "urn:sha1:84c5e4fab9171b7101ebe8adf57e034a84ac96ff",
@@ -237,12 +238,18 @@
     "rss:17cd2fa07a96a4ae6a75eacd465254e1176ff587",
     "rss:46311e26b6192b8f0dad3ac47b71c1e9d2f7c6ea",
     "rss:c55168e379bd878a17f3b4fb2dce44c84377e499",
-    "rss:1cdd3662b3bf3ee35569c755590b14306f3a5fd5"
+    "rss:1cdd3662b3bf3ee35569c755590b14306f3a5fd5",
+    "rss:ced3040c712659b9c2e628f4ab148202fb54cf6f",
+    "rss:ab7db300cdf45ff2787391022a33c100f2b85455"
   ],
   "pending": {
     "rss:c4b291e3ccab44a8c8210f94011ae38b2f58f57f": {
       "cycle_attempts": 1,
       "first_seen": "2026-09-19T03:01:02.935985+00:00"
+    },
+    "rss:3608cb5ac71be6c042096952f9746a1ab7ac8b3a": {
+      "cycle_attempts": 1,
+      "first_seen": "2026-09-24T16:28:40.176997+00:00"
     }
   }
 }
