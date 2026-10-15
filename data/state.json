@@ -180,7 +180,9 @@
     "rss:90bd064b55ea864928bcb46339620f419b97f044",
     "rss:fa7609351df47e95d16ae74e1a687189a112ea03",
     "rss:03e4e68808ab3c723206c00392f886e177b96a5b",
-    "rss:f13ce67bdb2a235fdeccb30e29e12140f729bdf7"
+    "rss:f13ce67bdb2a235fdeccb30e29e12140f729bdf7",
+    "rss:1908e2c145a1b6ea8e5c02ebd25a3488b0b2393a",
+    "rss:d5e23daddd0f67708a119e9ac569727d8af4c542"
   ],
   "ignored": [
     "urn:sha1:84c5e4fab9171b7101ebe8adf57e034a84ac96ff",
@@ -407,7 +409,8 @@
     "rss:01ef1566828a0ddb80f32b73b96b5761510b3fe8",
     "rss:6142c1b0081cc05535df04f3cfbc0e6f5bb76cba",
     "rss:bc10bc74ffbe90a0d284fbb10e727fd7f1640689",
-    "rss:8ab97e17311e30a7e25f19f0e1605bf128ceff2d"
+    "rss:8ab97e17311e30a7e25f19f0e1605bf128ceff2d",
+    "rss:36a91e97c73fd7ce005d508460352171941f0211"
   ],
   "pending": {
     "rss:c4b291e3ccab44a8c8210f94011ae38b2f58f57f": {
