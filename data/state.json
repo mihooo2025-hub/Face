@@ -302,7 +302,10 @@
     "rss:0a81d081ba49f6c91fb1e912c3a57e5a1b0b021d",
     "rss:a4907fd2233b8a1158eb2ab36ccabd80c76d0284",
     "rss:d5e76a9b09af47c9c941bc1e67c63eb0987e01f2",
-    "rss:1b70b518b8554555d0d2809af81798c54c1911fc"
+    "rss:1b70b518b8554555d0d2809af81798c54c1911fc",
+    "rss:33f04aa80df0a2212ccf13343515aadae2aca108",
+    "rss:59811e525ee5e6c946e7fb13b7bb240cf0e9721c",
+    "rss:90849c88e6b1592fa0ed6e9829982743a8a9a343"
   ],
   "ignored": [
     "urn:sha1:84c5e4fab9171b7101ebe8adf57e034a84ac96ff",
@@ -660,6 +663,10 @@
     "rss:b1574be67d58cd5115b9fec68416dad03a0df654": {
       "cycle_attempts": 1,
       "first_seen": "2026-09-28T12:50:34.789241+00:00"
+    },
+    "rss:4661030683e0c03bcf5fd23e71f45e5555a1eab7": {
+      "cycle_attempts": 1,
+      "first_seen": "2026-11-05T13:58:16.833431+00:00"
     }
   }
 }
